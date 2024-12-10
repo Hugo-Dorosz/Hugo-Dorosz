@@ -1,0 +1,193 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Dec 10 09:10:57 2024
+
+@author: DRH4455A
+"""
+
+''' ETAPE 1 : IMPORT DES BIBLIOTHEQUES '''
+
+import os
+import pandas as pd 
+import geopandas as gpd
+import matplotlib.pyplot as plt
+from pyproj import CRS
+import numpy as np
+from geopandas.tools import sjoin
+# Chemins de travail
+
+path_shp = "D:\PTUT Doc\HUGO\Vol10_E3.shp"
+gdf_points_arbre = gpd.read_file(path_shp)
+path_excel = "D:\PTUT Doc\HUGO\STATS\DBH_VRAI.xlsx"
+path_travail = "D:\PTUT Doc\HUGO"
+path_save = "D:\PTUT Doc\HUGO\RESULTAT"
+
+# Charger les données du fichier Excel contenant les valeurs de "DBH_MESURE"
+df_DBH = pd.read_excel(path_excel)
+df_DBH.head
+
+print(gdf_points_arbre)
+
+# Vérification du CRS du shapefile
+L93 = CRS.from_epsg(2154)
+
+if gdf_points_arbre.crs == L93:
+    print("CRS OK ... ")
+else:
+    print("Reprojection en Lambert...")
+    gdf_points_arbre = gdf_points_arbre.to_crs(2154)
+    
+
+
+# Jointure attributaire entre le GeoDataFrame des arbres et le DataFrame des valeurs de "DBH_MESURE"
+
+gdf_points_arbre = gdf_points_arbre.merge(df_DBH, on='CODE_ARBRE')
+
+
+# Creation des listes avant l'itération pour stocker les données 
+
+liste_relations_percentages = [] 
+pourcentages_points_dans_cercle_dbh = []
+
+dbh_estime_liste = []
+
+''' ETAPE 2 : Itération sur chaque arbre '''
+
+for code_arbre in gdf_points_arbre['CODE_ARBRE'].unique():
+    # Filtre des points pour le CODE_ARBRE spécifique
+    gdf_arbre = gdf_points_arbre[gdf_points_arbre['CODE_ARBRE'] == code_arbre]
+    # Explode des multipoints en points individuels
+    gdf_arbre_exploded = gdf_arbre.explode(index_parts=True)
+    # Compter le nombre de points pour cet arbre
+    nombre_points = len(gdf_arbre_exploded)
+  
+    # Afficher le nombre de points
+    print(f"Nombre de points pour l'arbre {code_arbre} : {nombre_points}")
+
+    
+    # Affichage des multipoints pour ce CODE_ARBRE
+    fig, ax = plt.subplots(figsize=(8, 8))
+    gdf_arbre.plot(ax=ax, color='green', markersize=5)  # Tracé des multipoints
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_title(f'Résultats pour {code_arbre} sur le vol 10')
+    ax.grid(True)
+    
+    # Fusionner tous les points en un seul MultiPoint
+    multi_point = gdf_arbre.geometry.unary_union
+    
+    # Calculer le centroïde du MultiPoint
+    center_of_mass = multi_point.centroid
+    
+    # Calculer la distance maximale entre le centroïde et chaque point
+    diametre_estime = max(center_of_mass.distance(point) for point in multi_point.geoms)
+    
+    # Créer le cercle comme une géométrie de type Point avec le rayon nécessaire
+    circle_geometry = center_of_mass.buffer(diametre_estime)
+    
+    # Créer un GeoDataFrame contenant le cercle
+    circle_gdf = gpd.GeoDataFrame(
+        {'Code_arbre': [gdf_arbre['CODE_ARBRE'].iloc[0]],
+         'center_x': [center_of_mass.x],
+         'center_y': [center_of_mass.y],
+         'radius': [diametre_estime],
+         'geometry': [circle_geometry]},
+        crs=gdf_arbre.crs
+    )
+    
+    # Afficher le GeoDataFrame contenant le cercle et les points sur le même plot
+    circle_gdf.plot(ax=ax, facecolor='none', edgecolor='red', linewidth=2)
+    
+    # Ajout de la valeur de diamètre estimé à la liste
+    dbh_estime_liste.append(diametre_estime)
+    
+    '''TRACER lE CERCLE DU DBH MESURE '''
+    # Filtre des points pour le CODE_ARBRE spécifique
+    gdf_arbre2 = gdf_points_arbre[gdf_points_arbre['CODE_ARBRE'] == code_arbre]
+    
+    # Récupération de la valeur DBH_MESURE pour cet arbre
+    dbh_mesure = gdf_arbre2['DBH_MESURE'].iloc[0]  # On prend la première valeur car elle devrait être la même pour tous les points de l'arbre
+    
+    # Calcul du diamètre en utilisant la valeur de DBH_MESURE (en cm)
+    diametre_dbh = dbh_mesure / 100  # Conversion de cm en mètres
+    
+    # Calcul du rayon du cercle à partir du diamètre
+    rayon_dbh = diametre_dbh / 2
+    
+    # Création du cercle basé sur la valeur de DBH_MESURE
+    center_of_mass = gdf_arbre2.geometry.unary_union.centroid
+    circle_dbh_geometry = center_of_mass.buffer(rayon_dbh)
+    
+    # Création d'un GeoDataFrame contenant le cercle basé sur DBH_MESURE
+    circle_dbh_gdf = gpd.GeoDataFrame(
+        {'Code_arbre': [code_arbre],
+         'center_x': [center_of_mass.x],
+         'center_y': [center_of_mass.y],
+         'diametre_dbh': [diametre_dbh],
+         'geometry': [circle_dbh_geometry]},
+        crs=gdf_arbre.crs
+    )
+    
+    # Calcul de la relation entre les diamètres des deux cercles en pourcentage
+    relation_diametres = round((diametre_dbh / (2 * diametre_estime)) * 100, 2)
+    print(f"Relation entre les diamètres des deux cercles en pourcentage : {relation_diametres}%")
+    
+
+    # Intersection points pour le DBH_VRAI
+    points_dans_cercle_dbh = sjoin(gdf_arbre_exploded, circle_dbh_gdf, how='inner', predicate='intersects')
+
+    # Nombre de points dans le cercle bleu
+    nombre_points_dans_cercle_dbh = len(points_dans_cercle_dbh)
+
+    # Afficher le nombre de points dans le cercle bleu
+    print(f"Nombre de points dans le cercle bleu (DBH_MESURE) pour l'arbre {code_arbre} : {nombre_points_dans_cercle_dbh}")
+    # Calcul du pourcentage de points dans le cercle bleu par rapport au total des points
+    pourcentage_points_dans_cercle_dbh = (nombre_points_dans_cercle_dbh / len(gdf_arbre_exploded)) * 100
+    print(f"Pourcentage de points dans le cercle bleu (DBH_MESURE) pour l'arbre {code_arbre} : {pourcentage_points_dans_cercle_dbh:.2f}%")
+    
+    pourcentage_points_dans_cercle_dbh = (nombre_points_dans_cercle_dbh / len(gdf_arbre_exploded)) * 100
+    pourcentages_points_dans_cercle_dbh.append(pourcentage_points_dans_cercle_dbh)
+
+    
+    # Affichage du cercle avec le diamètre basé sur DBH_MESURE
+    circle_dbh_gdf.plot(ax=ax, facecolor='none', edgecolor='blue', linewidth=2)
+    
+    
+    legend_labels = [f'DBH mesuré: {round(dbh_mesure)} cm\n DBH estimé: {round(diametre_estime * 100)} cm']
+    ax.legend(legend_labels)
+    
+    fig.savefig(f"{path_save}/Arbre_{code_arbre}.png")
+    
+    plt.show()
+    
+    #print(f"Surface totale du cercle englobant pour CODE_ARBRE {gdf_arbre['CODE_ARBRE'].iloc[0]} :", round(circle_geometry.area, 2), "m²")
+    #print(f"Diamètre du cercle englobant pour CODE_ARBRE {gdf_arbre['CODE_ARBRE'].iloc[0]} :", round(diametre_estime * 100, 2), "cm")
+    #print(f"Mesure réelle du DBH pour {code_arbre} :", round(dbh_mesure),"cm")
+
+mean_pourcentage = sum(pourcentages_points_dans_cercle_dbh) / len(pourcentages_points_dans_cercle_dbh)
+print("Moyenne %", mean_pourcentage)
+ecart_type_relations_percentages = round(np.std(liste_relations_percentages), 2)
+
+print(f"Écart-type des pourcentages de relation entre les diamètres des deux cercles : {ecart_type_relations_percentages}%")
+
+
+print("Moyenne %", mean_pourcentage)
+ecart_type_relations_percentages = round(np.std(liste_relations_percentages), 2)
+
+# Création d'un DataFrame avec les informations CODE_ARBRE, DBH_VRAI et DBH_ESTIME
+df_DBH_MESURE = pd.DataFrame({
+    'CODE_ARBRE': gdf_points_arbre['CODE_ARBRE'].unique(),
+    'DBH_VRAI': df_DBH['DBH_MESURE'],  # Supposons que les données de DBH_MESURE sont stockées dans df_DBH
+    'DBH_ESTIME': dbh_estime_liste
+})
+
+
+
+# Enregistrement du DataFrame dans un fichier Excel
+DBH_MESURE_excel_path = os.path.join(path_save,"DBH_MESURE.xlsx")
+df_DBH_MESURE.to_excel(DBH_MESURE_excel_path, index=False)
+
+print("Fichier Excel créé avec succès.")
+
+
+      
